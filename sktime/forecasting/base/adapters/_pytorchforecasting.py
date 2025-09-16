@@ -203,10 +203,13 @@ class _PytorchForecastingAdapter(_BaseGlobalForecaster):
             reference to self
         """
         self._max_prediction_length = np.max(fh.to_relative(self.cutoff))
+        # if isinstance(self._max_prediction_length, pd.Timedelta):
+        #     self._max_prediction_length = self._max_prediction_length.days
         if not fh.is_all_out_of_sample(self.cutoff):
             raise NotImplementedError(
                 f"No in sample predict support, but found fh with in sample index: {fh}"
             )
+
         # check if dummy X is needed
         # only the TFT model need X to fit, probably a bug in pytorch-forecasting
         X = self._dummy_X(X, y)
@@ -237,13 +240,15 @@ class _PytorchForecastingAdapter(_BaseGlobalForecaster):
                 # load model from checkpoint
                 best_model_path = self._trainer.checkpoint_callback.best_model_path
                 self.best_model = self.algorithm_class.load_from_checkpoint(
-                    best_model_path
+                    best_model_path,
                 )
             else:
                 self.best_model = self._forecaster
         else:
             # load model from disk
-            self.best_model = self.algorithm_class.load_from_checkpoint(self.model_path)
+            self.best_model = self.algorithm_class.load_from_checkpoint(
+                self.model_path,
+            )
         return self
 
     def _predict(
@@ -520,6 +525,9 @@ class _PytorchForecastingAdapter(_BaseGlobalForecaster):
         data = pd.concat([data, time_idx], axis=1)
         # reset multi index to normal columns
         data = data.reset_index(level=list(range(self._index_len)))
+        print(data["_auto_time_idx"].max())
+        print(max_prediction_length)
+        print(self._max_prediction_length)
         training_cutoff = data["_auto_time_idx"].max() - max_prediction_length
         # add a constant column as group id if data only contains only one timeseries
         if self._index_len == 1:
@@ -645,15 +653,29 @@ class _PytorchForecastingAdapter(_BaseGlobalForecaster):
         return X
 
     def _extend_y(self, y: pd.DataFrame, fh: ForecastingHorizon):
-        _fh = ForecastingHorizon(
-            range(1, self._max_prediction_length + 1),
-            is_relative=True,
-            freq=fh.freq,
-        )
-        index = _fh.to_absolute_index(self.cutoff)
+        # _fh = ForecastingHorizon(
+        #     range(1, self._max_prediction_length + 1),
+        #     is_relative=True,
+        #     freq=fh.freq,
+        # )
+        # index = _fh.to_absolute_index(self.cutoff)
+        # _y = pd.DataFrame(index=index, columns=y.columns)
+        # _y.index.rename(y.index.names[-1], inplace=True)
+        # _y.fillna(0, inplace=True)
+        # len_levels = len(y.index.names)
+        # if len_levels == 1:
+        #     _y = pd.concat([y, _y])
+        # else:
+        #     _y = y.groupby(level=list(range(len_levels - 1))).apply(
+        #         lambda x: pd.concat([x.droplevel(list(range(len_levels - 1))), _y])
+        #     )
+        # return _y
+
+        index = fh.to_absolute_index(self.cutoff)
         _y = pd.DataFrame(index=index, columns=y.columns)
         _y.index.rename(y.index.names[-1], inplace=True)
         _y.fillna(0, inplace=True)
+
         len_levels = len(y.index.names)
         if len_levels == 1:
             _y = pd.concat([y, _y])
