@@ -202,6 +202,11 @@ class _PytorchForecastingAdapter(_BaseGlobalForecaster):
             reference to self
         """
         self._max_prediction_length = np.max(fh.to_relative(self.cutoff))
+        if isinstance(self._max_prediction_length, pd.Timedelta):
+            self._max_prediction_length = int(
+                self._max_prediction_length / pd.Timedelta(fh.freq)
+            )
+
         if not fh.is_all_out_of_sample(self.cutoff):
             raise NotImplementedError(
                 f"No in sample predict support, but found fh with in sample index: {fh}"
@@ -535,6 +540,10 @@ class _PytorchForecastingAdapter(_BaseGlobalForecaster):
             )
         ][data["_auto_time_idx"] > training_cutoff]
         # infer time_idx column, target column and instances from data
+        print("MAX TIME IDX:", data["_auto_time_idx"].max())
+        print("MAX PREDICTION LENGTH:", max_prediction_length)
+        print("DATA:", data.index)
+        print("TRAINING CUTOFF:", training_cutoff)
         _dataset_params = {
             "data": data[data["_auto_time_idx"] <= training_cutoff],
             "time_idx": "_auto_time_idx",
@@ -550,6 +559,7 @@ class _PytorchForecastingAdapter(_BaseGlobalForecaster):
         _dataset_params.update(dataset_params)
         # overwrite max_prediction_length
         _dataset_params["max_prediction_length"] = int(max_prediction_length)
+        print(_dataset_params)
         training = TimeSeriesDataSet(**_dataset_params)
         validation = TimeSeriesDataSet.from_dataset(
             training, data, predict=True, stop_randomization=True
