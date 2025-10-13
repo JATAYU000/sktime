@@ -6,6 +6,9 @@ __all__ = ["SeasonalityACF", "SeasonalityPeriodogram"]
 
 import numpy as np
 
+MIN_FFT_CYCLES = 4
+MAX_FFT_PERIOD = 500
+
 from sktime.param_est.base import BaseParamFitter
 
 
@@ -467,7 +470,7 @@ class SeasonalityPeriodogram(BaseParamFitter):
         "capability:missing_values": True,
         "capability:multivariate": False,
         # todo 0.40.0: check whether scipy<1.16 is still needed
-        "python_dependencies": ["seasonal", "scipy<1.16"],
+        "python_dependencies": ["scipy"],
         # CI and test flags
         # -----------------
         "tests:vm": True,  # tested on separate VM due to seasonal dependency
@@ -497,20 +500,85 @@ class SeasonalityPeriodogram(BaseParamFitter):
         -------
         self : reference to self
         """
-        from seasonal.periodogram import periodogram_peaks
+        import scipy
 
-        seasons = periodogram_peaks(
-            X,
-            min_period=self.min_period,
-            max_period=self.max_period,
-            thresh=self.thresh,
+        data = X.values if hasattr(X, "values") else X
+
+        # Set default max_period if not provided
+        if self.max_period is None:
+            self._max_period = int(min(len(data) / MIN_FFT_CYCLES, MAX_FFT_PERIOD))
+        else:
+            self._max_period = self.max_period
+        nperseg = min(self._max_period * 2, len(data) // 2)
+
+        # Compute Welch's periodogram
+        freqs, power = scipy.signal.welch(
+            data, 1.0, scaling="spectrum", nperseg=nperseg
         )
+
+        # Convert frequencies to periods (skip DC component at index 0)
+        periods = np.array([int(round(1.0 / freq)) for freq in freqs[1:]])
+        power = power[1:]
+        idx = 1
+        while idx < len(periods):
+            if periods[idx] == periods[idx - 1]:
+                power[idx - 1] = max(power[idx - 1], power[idx])
+                periods = np.delete(periods, idx)
+                power = np.delete(power, idx)
+            else:
+                idx += 1
+
+        # Disregard the artifact at nperseg
+        if len(periods) > 0:
+            power[periods == nperseg] = 0
+
+        # Filter by period constraints
+        if len(periods) > 0:
+            valid_mask = (periods >= self.min_period) & (periods <= self._max_period)
+            periods = periods[valid_mask]
+            power = power[valid_mask]
+
+        # Check if all power values are essentially zero
+        if len(power) == 0 or np.all(np.isclose(power, 0.0)):
+            self.sp_ = 1
+            self.sp_significant_ = []
+            return self
+
+        # Find significant peaks
+        result = []
+        keep = power.max() * self.thresh
+        power_copy = power.copy()
+
+        while len(power_copy) > 0:
+            peak_i = power_copy.argmax()
+            if power_copy[peak_i] < keep:
+                break
+
+            peak_period = periods[peak_i]
+            peak_power = power_copy[peak_i]
+
+            min_period_around = (
+                periods[min(peak_i + 1, len(periods) - 1)]
+                if peak_i + 1 < len(periods)
+                else peak_period
+            )
+            max_period_around = (
+                periods[max(peak_i - 1, 0)] if peak_i > 0 else peak_period
+            )
+            result.append(
+                [peak_period, peak_power, min_period_around, max_period_around]
+            )
+            power_copy[peak_i] = 0
+
+        seasons = result if len(result) else None
 
         if seasons is None or len(seasons) == 0:
             self.sp_ = 1
             self.sp_significant_ = []
         else:
-            seasons = [x[0] for x in seasons]
+            seasons_with_power = [(x[0], x[1]) for x in seasons]
+            seasons_with_power.sort(key=lambda x: x[1], reverse=True)
+            seasons = [x[0] for x in seasons_with_power]
             self.sp_significant_ = seasons
             self.sp_ = self.sp_significant_[0]
 
